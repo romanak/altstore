@@ -1,0 +1,76 @@
+name: Update Central source.json
+
+on:
+  repository_dispatch:
+    types: [new-app-release]
+
+permissions:
+  contents: write
+
+# Queue updates sequentially to prevent Git push conflicts
+concurrency:
+  group: source-json-updater
+  cancel-in-progress: false
+
+jobs:
+  update-json:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Central Source Repo
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Upsert App and Prepend Version in source.json
+        env:
+          APP_NAME: ${{ github.event.client_payload.app_name }}
+          BUNDLE_ID: ${{ github.event.client_payload.bundle_id }}
+          VERSION: ${{ github.event.client_payload.version }}
+          BUILD_VERSION: ${{ github.event.client_payload.build_version }}
+          DATE: ${{ github.event.client_payload.date }}
+          DOWNLOAD_URL: ${{ github.event.client_payload.download_url }}
+          IPA_SIZE: ${{ github.event.client_payload.size }}
+          DESC: ${{ github.event.client_payload.description }}
+          DEV_NAME: ${{ github.repository_owner }}
+        run: |
+          jq --arg app_name "$APP_NAME" \
+             --arg bundle_id "$BUNDLE_ID" \
+             --arg dev_name "$DEV_NAME" \
+             --arg ver "$VERSION" \
+             --arg build "$BUILD_VERSION" \
+             --arg date "$DATE" \
+             --arg desc "$DESC" \
+             --arg url "$DOWNLOAD_URL" \
+             --argjson size "$IPA_SIZE" \
+             '
+             {
+               version: $ver,
+               buildVersion: $build,
+               date: $date,
+               localizedDescription: $desc,
+               downloadURL: $url,
+               size: $size
+             } as $new_version |
+             if any(.apps[]; .bundleIdentifier == $bundle_id) then
+               (.apps[] | select(.bundleIdentifier == $bundle_id).versions) |= [$new_version] + .
+             else
+               .apps += [{
+                 name: $app_name,
+                 bundleIdentifier: $bundle_id,
+                 developerName: $dev_name,
+                 subtitle: "Built with Swift Playgrounds",
+                 localizedDescription: $desc,
+                 iconURL: ("https://raw.githubusercontent.com/" + $dev_name + "/altstore/main/icons/" + $bundle_id + ".png"),
+                 versions: [$new_version]
+               }]
+             end
+             ' source.json > source.tmp.json && mv source.tmp.json source.json
+
+      - name: Commit and Push Updated source.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add source.json
+          git commit -m "chore: release ${{ github.event.client_payload.app_name }} v${{ github.event.client_payload.version }}"
+          git push origin main
